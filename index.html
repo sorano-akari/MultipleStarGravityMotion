@@ -71,7 +71,7 @@
     <div id="controls">
         <div class="control-group">
             <label for="gravityInput">重力定数:</label>
-            <input type="number" id="gravityInput" value="2500" step="100">
+            <input type="number" id="gravityInput" value="500" step="100">
         </div>
         <div class="control-group">
             <label for="numParticlesInput">初期粒子数:</label>
@@ -79,11 +79,11 @@
         </div>
         <div class="control-group">
             <label for="dtInput">タイムステップ(DT):</label>
-            <input type="number" id="dtInput" value="0.005" step="0.001">
+            <input type="number" id="dtInput" value="0.01" step="0.005">
         </div>
         <div class="control-group">
             <label for="maxDistanceInput">重力範囲:</label>
-            <input type="number" id="maxDistanceInput" value="500" step="50">
+            <input type="number" id="maxDistanceInput" value="5000" step="50">
         </div>
         <div class="control-group">
             <label for="minMassInput">最小質量(周回):</label>
@@ -91,11 +91,11 @@
         </div>
         <div class="control-group">
             <label for="maxMassInput">最大質量(周回):</label>
-            <input type="number" id="maxMassInput" value="5" step="1">
+            <input type="number" id="maxMassInput" value="10" step="1">
         </div>
         <div class="control-group">
             <label for="centralMassInput">中心質量:</label>
-            <input type="number" id="centralMassInput" value="100" step="10">
+            <input type="number" id="centralMassInput" value="1000" step="10">
         </div>
         <button id="applyButton">適用 & リセット</button>
         <button id="pauseButton">⏸️ 一時停止</button>
@@ -382,7 +382,6 @@
 
             const boundingRadius = Math.min(canvas.width, canvas.height) / 2 - 2;
             
-            const particlesToRespawn = [];
             for (let i = 0; i < particles.length; i++) {
                 const p = particles[i];
 
@@ -393,29 +392,9 @@
             
                 const distFromCenter = Math.sqrt(p.x * p.x + p.y * p.y);
                 if (distFromCenter > boundingRadius) {
-                    particlesToRespawn.push(p);
+                    p.x = -p.x;
+                    p.y = -p.y;
                 }
-            }
-            
-            particles = particles.filter(p => !particlesToRespawn.includes(p));
-
-            for(const p of particlesToRespawn) {
-                const newParticle = new Particle(0, 0, p.mass);
-                const angle = Math.random() * Math.PI * 2;
-                const x = (boundingRadius) * Math.cos(angle); 
-                const y = (boundingRadius) * Math.sin(angle); 
-                newParticle.x = x;
-                newParticle.y = y;
-
-                const central = particles.find(p => p.mass === CENTRAL_MASS);
-                if (central) {
-                    const distFromCentral = Math.sqrt(x*x + y*y);
-                    const centralAngle = Math.atan2(y, x);
-                    const speed = Math.sqrt(GRAVITATIONAL_CONSTANT * central.mass / (distFromCentral + 1));
-                    newParticle.vx = -Math.sin(centralAngle) * speed;
-                    newParticle.vy = Math.cos(centralAngle) * speed;
-                }
-                particles.push(newParticle);
             }
             
             particleCountDisplay.textContent = `粒子数: ${formatParticleCount(particles.length)}`;
