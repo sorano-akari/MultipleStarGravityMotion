@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>2D Gravity Simulation - Cosmic Dust</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: black;
+            color: white;
+            font-family: sans-serif;
+        }
+        canvas {
+            display: block;
+        }
+        #controls {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            border-radius: 5px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        #controls input {
+            width: 80px;
+        }
+        #particle-count {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            color: white;
+            font-size: 1.2em;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 5px 10px;
+            border-radius: 5px;
+            font-family: 'Courier New', Courier, monospace;
+        }
+        #error-log-container {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            border-radius: 5px;
+        }
+        #error-log {
+            width: 300px;
+            height: 100px;
+            background: rgba(0, 0, 0, 0.7);
+            color: lime;
+            border: 1px solid lime;
+            font-family: monospace;
+            resize: none;
+            overflow-y: scroll;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="myCanvas"></canvas>
+    
+    <div id="controls">
+        <div class="control-group">
+            <label for="gravityInput">重力定数:</label>
+            <input type="number" id="gravityInput" value="2500" step="100">
+        </div>
+        <div class="control-group">
+            <label for="numParticlesInput">粒子数:</label>
+            <input type="number" id="numParticlesInput" value="250" step="10">
+        </div>
+        <div class="control-group">
+            <label for="dtInput">タイムステップ(DT):</label>
+            <input type="number" id="dtInput" value="0.01" step="0.001">
+        </div>
+        <div class="control-group">
+            <label for="maxDistanceInput">重力範囲:</label>
+            <input type="number" id="maxDistanceInput" value="500" step="50">
+        </div>
+        <div class="control-group">
+            <label for="minMassInput">最小質量(周回):</label>
+            <input type="number" id="minMassInput" value="1" step="1">
+        </div>
+        <div class="control-group">
+            <label for="maxMassInput">最大質量(周回):</label>
+            <input type="number" id="maxMassInput" value="3" step="1">
+        </div>
+        <div class="control-group">
+            <label for="centralMassInput">中心質量:</label>
+            <input type="number" id="centralMassInput" value="100" step="10">
+        </div>
+        <button id="applyButton">適用 & リセット</button>
+        <button id="pauseButton">⏸️ 一時停止</button>
+    </div>
+
+    <p id="particle-count">粒子数: 00250</p>
+    
+    <div id="error-log-container">
+        <label for="error-log">ログ:</label>
+        <textarea id="error-log" readonly></textarea>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('myCanvas');
+        const ctx = canvas.getContext('2d');
+        const gravityInput = document.getElementById('gravityInput');
+        const numParticlesInput = document.getElementById('numParticlesInput');
+        const dtInput = document.getElementById('dtInput');
+        const maxDistanceInput = document.getElementById('maxDistanceInput');
+        const minMassInput = document.getElementById('minMassInput');
+        const maxMassInput = document.getElementById('maxMassInput');
+        const centralMassInput = document.getElementById('centralMassInput');
+        const applyButton = document.getElementById('applyButton');
+        const pauseButton = document.getElementById('pauseButton');
+        const particleCountDisplay = document.getElementById('particle-count');
+        const logWindow = document.getElementById('error-log');
+
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+
+        let NUM_PARTICLES = parseInt(numParticlesInput.value);
+        let GRAVITATIONAL_CONSTANT = parseFloat(gravityInput.value);
+        let DT = parseFloat(dtInput.value);
+        let MAX_DISTANCE = parseFloat(maxDistanceInput.value);
+        let MIN_INITIAL_MASS = parseInt(minMassInput.value);
+        let MAX_INITIAL_MASS = parseInt(maxMassInput.value);
+        let CENTRAL_MASS = parseFloat(centralMassInput.value);
+        const FRICTION = 1.0;
+
+        const MIN_MASS_PRODUCT = 50;
+
+        let lastTime = 0;
+        let particles = [];
+        let isPaused = false;
+        
+        const ROCHE_LIMIT_CONSTANT = 2.44;
+
+        function logMessage(message) {
+            logWindow.value += message + '\n';
+            logWindow.scrollTop = logWindow.scrollHeight;
+        }
+
+        function parseRgb(rgbString) {
+            const match = rgbString.match(/^rgb\((\d+),\s*(\d+),\s*(\d+)\)$/);
+            if (match) {
+                return {
+                    r: parseInt(match[1]),
+                    g: parseInt(match[2]),
+                    b: parseInt(match[3])
+                };
+            }
+            if (rgbString.startsWith('#')) {
+                const hex = rgbString.slice(1);
+                return {
+                    r: parseInt(hex.substring(0, 2), 16),
+                    g: parseInt(hex.substring(2, 4), 16),
+                    b: parseInt(hex.substring(4, 6), 16)
+                };
+            }
+            return { r: 0, g: 0, b: 0 };
+        }
+
+        class Particle {
+            constructor(x, y, mass, isCentral = false, hasDecomposed = false) {
+                this.x = x;
+                this.y = y;
+                this.vx = 0;
+                this.vy = 0;
+                this.mass = mass;
+                this.radius = Math.pow(this.mass, 1/3) * 1.0;
+                this.drawRadius = this.radius;
+                this.isCentral = isCentral;
+                this.hasDecomposed = hasDecomposed;
+                
+                const minMass = isCentral ? CENTRAL_MASS : MIN_INITIAL_MASS;
+                const maxMass = isCentral ? CENTRAL_MASS : MAX_INITIAL_MASS;
+                const massRatio = (this.mass - minMass) / (maxMass - minMass);
+                
+                if (this.isCentral) {
+                    this.originalColor = `rgb(255, 255, 0)`;
+                } else {
+                    const r = 255;
+                    const g = 255;
+                    const b = Math.floor(255 * (1 - massRatio * 0.5));
+                    this.originalColor = `rgb(${r}, ${g}, ${b})`;
+                }
+                this.color = this.originalColor;
+            }
+
+            draw() {
+                const centerX = canvas.width / 2;
+                const centerY = canvas.height / 2;
+                const drawX = this.x + centerX;
+                const drawY = this.y + centerY;
+
+                if (drawX >= 0 && drawX <= canvas.width && drawY >= 0 && drawY <= canvas.height) {
+                    ctx.beginPath();
+                    ctx.arc(drawX, drawY, this.drawRadius, 0, Math.PI * 2);
+                    ctx.fillStyle = this.color;
+                    ctx.fill();
+                    ctx.closePath();
+                }
+            }
+        }
+        
+        function formatParticleCount(count) {
+            return String(count).padStart(5, '0');
+        }
+
+        function initParticles() {
+            particles = [];
+            const centerX = canvas.width / 2;
+            const centerY = canvas.height / 2;
+            const boundingRadius = Math.sqrt(Math.pow(canvas.width, 2) + Math.pow(canvas.height, 2)) / 2;
+            logWindow.value = "";
+
+            particles.push(new Particle(0, 0, CENTRAL_MASS, true));
+
+            while (particles.length < NUM_PARTICLES) {
+                const x = (Math.random() * 2 - 1) * boundingRadius;
+                const y = (Math.random() * 2 - 1) * boundingRadius;
+
+                const distFromCenter = Math.sqrt(x * x + y * y);
+                
+                if (distFromCenter < boundingRadius) {
+                    const mass = Math.floor(Math.random() * (MAX_INITIAL_MASS - MIN_INITIAL_MASS + 1)) + MIN_INITIAL_MASS;
+                    const newParticle = new Particle(x, y, mass);
+                    
+                    const angle = Math.atan2(y, x);
+                    const speed = Math.sqrt(GRAVITATIONAL_CONSTANT * CENTRAL_MASS / (distFromCenter + 1));
+                    
+                    newParticle.vx = -Math.sin(angle) * speed * (1 + (Math.random() - 0.5) * 0.5);
+                    newParticle.vy = Math.cos(angle) * speed * (1 + (Math.random() - 0.5) * 0.5);
+
+                    particles.push(newParticle);
+                }
+            }
+            
+            particleCountDisplay.textContent = `粒子数: ${formatParticleCount(particles.length)}`;
+            logMessage("シミュレーションがリセットされました。");
+        }
+
+        function update() {
+            const particlesToAdd = [];
+            const particlesToRemove = new Set();
+            
+            const mergeCandidates = new Set();
+            const decomposeCandidates = new Set();
+            
+            // 物理計算とイベント検知
+            for (let i = 0; i < particles.length; i++) {
+                const p1 = particles[i];
+                for (let j = i + 1; j < particles.length; j++) {
+                    const p2 = particles[j];
+
+                    const dx = p2.x - p1.x;
+                    const dy = p2.y - p1.y;
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+                    
+                    if (distance < 1) continue;
+
+                    // ロシュ限界の判定
+                    let primary, satellite;
+                    if (p1.mass > p2.mass) {
+                        primary = p1;
+                        satellite = p2;
+                    } else {
+                        primary = p2;
+                        satellite = p1;
+                    }
+
+                    if (satellite.mass >= 2 && !satellite.hasDecomposed && primary.mass > 0) {
+                        const rocheLimit = primary.radius * Math.pow((primary.mass / satellite.mass), 1/3);
+
+                        if (rocheLimit > satellite.radius && distance < rocheLimit) {
+                            decomposeCandidates.add(satellite);
+                        }
+                    }
+
+                    // 合体判定 (物理的な接触)
+                    if (distance < p1.radius + p2.radius) {
+                        mergeCandidates.add(p1);
+                        mergeCandidates.add(p2);
+                    }
+                    
+                    // 重力計算
+                    const massProduct = p1.mass * p2.mass;
+                    if (distance > MAX_DISTANCE && massProduct < MIN_MASS_PRODUCT) {
+                        continue;
+                    }
+                    
+                    const force = (GRAVITATIONAL_CONSTANT * massProduct) / (distance * distance);
+                    const angle = Math.atan2(dy, dx);
+                    const fx = Math.cos(angle) * force;
+                    const fy = Math.sin(angle) * force;
+
+                    p1.vx += (fx / p1.mass) * DT;
+                    p1.vy += (fy / p1.mass) * DT;
+                    p2.vx -= (fx / p2.mass) * DT;
+                    p2.vy -= (fy / p2.mass) * DT;
+                }
+            }
+            
+            // 処理順序: 分裂 -> 合体 -> 粒子の削除・追加
+            
+            // 分裂処理
+            for (const p of decomposeCandidates) {
+                // 合体候補に入っている粒子は分裂を優先
+                if (mergeCandidates.has(p)) {
+                    mergeCandidates.delete(p);
+                }
+
+                const parentMass = p.mass;
+                const parentVx = p.vx;
+                const parentVy = p.vy;
+                
+                const newParticlesCount = parentMass;
+                const newParticles = [];
+                let totalRelativeVx = 0;
+                let totalRelativeVy = 0;
+                
+                for (let k = 0; k < newParticlesCount; k++) {
+                    const newParticle = new Particle(p.x, p.y, 1, false, true);
+                    
+                    // 潮汐力による相対速度をシミュレート
+                    const relativeAngle = Math.random() * Math.PI * 2;
+                    const relativeSpeed = 1; // 潮汐力による引き裂き速度の基本値
+                    
+                    const relativeVx = Math.cos(relativeAngle) * relativeSpeed;
+                    const relativeVy = Math.sin(relativeAngle) * relativeSpeed;
+                    
+                    newParticle.vx = relativeVx;
+                    newParticle.vy = relativeVy;
+                    
+                    newParticles.push(newParticle);
+                    totalRelativeVx += relativeVx;
+                    totalRelativeVy += relativeVy;
+                }
+                
+                // 運動量保存を考慮した速度の分配
+                const avgRelativeVx = totalRelativeVx / newParticlesCount;
+                const avgRelativeVy = totalRelativeVy / newParticlesCount;
+
+                for (let k = 0; k < newParticles.length; k++) {
+                    const particle = newParticles[k];
+                    
+                    // 親粒子の重心速度を継承
+                    particle.vx += parentVx - avgRelativeVx;
+                    particle.vy += parentVy - avgRelativeVy;
+
+                    particle.color = '#00FFFF';
+                    particlesToAdd.push(particle);
+                }
+                particlesToRemove.add(p);
+            }
+
+            // 合体処理
+            for (const p of mergeCandidates) {
+                if (particlesToRemove.has(p)) continue;
+
+                const mergeWith = Array.from(mergeCandidates).find(
+                    other => other !== p && !particlesToRemove.has(other)
+                    && (Math.sqrt(Math.pow(other.x - p.x, 2) + Math.pow(other.y - p.y, 2)) < p.radius + other.radius)
+                );
+
+                if (mergeWith) {
+                    const p1 = p;
+                    const p2 = mergeWith;
+
+                    const newMass = p1.mass + p2.mass;
+                    const newVx = (p1.vx * p1.mass + p2.vx * p2.mass) / newMass;
+                    const newVy = (p1.vy * p1.mass + p2.vy * p2.mass) / newMass;
+                    const newX = (p1.x * p1.mass + p2.x * p2.mass) / newMass;
+                    const newY = (p1.y * p1.mass + p2.y * p2.mass) / newMass;
+                    
+                    particlesToRemove.add(p1);
+                    particlesToRemove.add(p2);
+
+                    const newParticle = new Particle(newX, newY, newMass);
+                    newParticle.vx = newVx;
+                    newParticle.vy = newVy;
+                    
+                    if (p1.isCentral || p2.isCentral) {
+                        newParticle.isCentral = true;
+                        newParticle.originalColor = `rgb(255, 255, 0)`;
+                        newParticle.color = `rgb(255, 255, 0)`;
+                    }
+                    particlesToAdd.push(newParticle);
+                }
+            }
+            
+            // 物理位置の更新
+            const newParticlesList = particles.filter(p => !particlesToRemove.has(p));
+            particles = newParticlesList.concat(particlesToAdd);
+            particles.sort((a, b) => b.isCentral - a.isCentral);
+            
+            const boundingRadius = Math.sqrt(Math.pow(canvas.width, 2) + Math.pow(canvas.height, 2)) / 2;
+
+            for (let i = 0; i < particles.length; i++) {
+                const p = particles[i];
+
+                if (p.isCentral) {
+                    p.x = 0;
+                    p.y = 0;
+                    p.vx = 0;
+                    p.vy = 0;
+                    continue;
+                }
+
+                p.x += p.vx * DT;
+                p.y += p.vy * DT;
+
+                p.vx *= FRICTION;
+                p.vy *= FRICTION;
+                
+                const distFromCenter = Math.sqrt(p.x * p.x + p.y * p.y);
+                if (distFromCenter > boundingRadius) {
+                    p.mass = Math.floor(Math.random() * (MAX_INITIAL_MASS - MIN_INITIAL_MASS + 1)) + MIN_INITIAL_MASS;
+                    p.radius = Math.pow(p.mass, 1/3) * 2;
+                    p.drawRadius = p.radius;
+                    p.hasDecomposed = false;
+                    
+                    const angle = Math.random() * Math.PI * 2;
+                    p.x = boundingRadius * Math.cos(angle);
+                    p.y = boundingRadius * Math.sin(angle);
+                    
+                    const newDistFromCenter = Math.sqrt(p.x * p.x + p.y * p.y);
+                    const speed = Math.sqrt(GRAVITATIONAL_CONSTANT * CENTRAL_MASS / (newDistFromCenter + 1));
+                    p.vx = -Math.sin(angle) * speed * (1 + (Math.random() - 0.5) * 0.5);
+                    p.vy = Math.cos(angle) * speed * (1 + (Math.random() - 0.5) * 0.5);
+                }
+            }
+            particleCountDisplay.textContent = `粒子数: ${formatParticleCount(particles.length)}`;
+        }
+
+        function animate(currentTime) {
+            if (!isPaused) {
+                update();
+            }
+            
+            ctx.fillStyle = 'black';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            for (const p of particles) {
+                if (p.color !== p.originalColor) {
+                    const currentRgb = parseRgb(p.color);
+                    const originalRgb = parseRgb(p.originalColor);
+                    const blendFactor = 0.05;
+
+                    currentRgb.r = Math.round(currentRgb.r * (1 - blendFactor) + originalRgb.r * blendFactor);
+                    currentRgb.g = Math.round(currentRgb.g * (1 - blendFactor) + originalRgb.g * blendFactor);
+                    currentRgb.b = Math.round(currentRgb.b * (1 - blendFactor) + originalRgb.b * blendFactor);
+                    
+                    p.color = `rgb(${currentRgb.r}, ${currentRgb.g}, ${currentRgb.b})`;
+
+                    const colorDiff = Math.abs(currentRgb.r - originalRgb.r) + Math.abs(currentRgb.g - originalRgb.g) + Math.abs(currentRgb.b - originalRgb.b);
+                    if (colorDiff < 10) {
+                        p.color = p.originalColor;
+                    }
+                }
+                p.draw();
+            }
+            
+            requestAnimationFrame(animate);
+        }
+
+        applyButton.addEventListener('click', () => {
+            const newGravityValue = parseFloat(gravityInput.value);
+            const newNumParticlesValue = parseInt(numParticlesInput.value);
+            const newDtValue = parseFloat(dtInput.value);
+            const newMaxDistanceValue = parseFloat(maxDistanceInput.value);
+            const newMinMassValue = parseInt(minMassInput.value);
+            const newMaxMassValue = parseInt(maxMassInput.value);
+            const newCentralMassValue = parseFloat(centralMassInput.value);
+
+            if (!isNaN(newGravityValue)) {
+                GRAVITATIONAL_CONSTANT = newGravityValue;
+            } else {
+                gravityInput.value = GRAVITATIONAL_CONSTANT;
+            }
+            
+            if (!isNaN(newDtValue)) {
+                DT = newDtValue;
+            } else {
+                dtInput.value = DT;
+            }
+
+            if (!isNaN(newMaxDistanceValue)) {
+                MAX_DISTANCE = newMaxDistanceValue;
+            } else {
+                maxDistanceInput.value = MAX_DISTANCE;
+            }
+
+            if (!isNaN(newMinMassValue)) {
+                MIN_INITIAL_MASS = newMinMassValue;
+            } else {
+                minMassInput.value = MIN_INITIAL_MASS;
+            }
+
+            if (!isNaN(newMaxMassValue) && newMaxMassValue >= MIN_INITIAL_MASS) {
+                MAX_INITIAL_MASS = newMaxMassValue;
+            } else {
+                maxMassInput.value = MAX_INITIAL_MASS;
+            }
+
+            if (!isNaN(newNumParticlesValue) && newNumParticlesValue > 0) {
+                NUM_PARTICLES = newNumParticlesValue;
+                initParticles();
+            } else {
+                numParticlesInput.value = NUM_PARTICLES;
+            }
+        });
+
+        pauseButton.addEventListener('click', () => {
+            isPaused = !isPaused;
+            if (isPaused) {
+                pauseButton.textContent = '▶️ 再開';
+                logMessage("シミュレーションが一時停止されました。");
+            } else {
+                pauseButton.textContent = '⏸️ 一時停止';
+                logMessage("シミュレーションが再開されました。");
+                requestAnimationFrame(animate);
+            }
+        });
+
+        initParticles();
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>
